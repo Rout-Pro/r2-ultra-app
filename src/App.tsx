@@ -21,6 +21,13 @@ import {
   DEFAULT_EQ_PRESETS,
   EQ_FREQUENCIES,
 } from './services/audioEngine';
+import {
+  deleteImportedAudioTrack,
+  getAllImportedAudioTracks,
+  getStoredItem,
+  saveImportedAudioTrack,
+  setStoredItem,
+} from './services/storageService';
 import { HolographicBackground } from './components/HolographicBackground';
 import {
   BottomStatusPanels,
@@ -29,7 +36,22 @@ import {
 } from './components/FloatingWidgets';
 import { MainGlassPanel } from './components/MainGlassPanel';
 
-const STORAGE_KEY = 'r2_ultra_state_v1';
+interface PersistedAppState {
+  volume?: number;
+  isShuffle?: boolean;
+  repeatMode?: RepeatMode;
+  eqBands?: EQBand[];
+  activePresetId?: string;
+  customPresets?: EQPreset[];
+  effects?: AudioEffectsState;
+  playlists?: Playlist[];
+  settings?: Partial<AppSettings>;
+  currentTrackId?: string;
+  savedPosition?: number;
+  queueIds?: string[];
+  favoriteIds?: string[];
+  lastPlayedMap?: Record<string, number>;
+}
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>(() => createInitialLibrary());
@@ -45,6 +67,8 @@ export default function App() {
   const [repeatMode, setRepeatMode] = useState<RepeatMode>('all');
   const [activeScreen, setActiveScreen] = useState<ScreenId>('home');
   const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>('orb');
+  const [isHydrated, setIsHydrated] = useState<boolean>(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
 
   const [eqBands, setEqBands] = useState<EQBand[]>(() =>
     EQ_FREQUENCIES.map((item, i) => ({
@@ -94,62 +118,218 @@ export default function App() {
   });
 
   const [telemetry, setTelemetry] = useState<TelemetryData>(() =>
-    audioEngine.getTelemetry([], {
-      bassBoost: 3,
-      trebleExciter: 2.5,
-      spatialAmbience: 25,
-      stereoPan: 0,
-      compressorEnabled: true,
-      playbackSpeed: 1,
-      sleepTimerMinutes: null,
-      sleepTimerRemainingSec: null,
-    })
+    audioEngine.getTelemetry([])
   );
 
   // Subtle pointer parallax for the 3D stage
   const [stageParallax, setStageParallax] = useState({ x: 0, y: 0 });
 
-  // Load saved state from localStorage on mount
+  // 1. Hydration gate: Load IndexedDB imported Blobs and state on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.volume !== undefined) {
-          setVolume(parsed.volume);
-          audioEngine.setVolume(parsed.volume);
+    let isCancelled = false;
+
+    async function hydrate() {
+      const baseLibrary = createInitialLibrary();
+      let restoredTracks: Track[] = [];
+
+      try {
+        const stored = await getAllImportedAudioTracks();
+        restoredTracks = stored.map((item) => {
+          const freshUrl = URL.createObjectURL(item.blob);
+          return {
+            id: item.id,
+            title: item.title,
+            artist: item.artist || 'Unknown Artist (Local)',
+            album: item.album || 'Imported Audio',
+            folder: item.folder || '/Local_Storage/Imports',
+            duration: item.duration || 180,
+            bpm: item.bpm || 120,
+            bitrate: item.bitrate || 'Original Audio File',
+            sampleRate: item.sampleRate || 'WebAudio / Local File',
+            coverArt:
+              item.coverArt ||
+              generateHolographicCover(
+                item.title,
+                'Local Audio Import',
+                item.palette?.primary || '#00f0ff',
+                item.palette?.secondary || '#a855f7',
+                3
+              ),
+            palette: item.palette || {
+              primary: '#00f0ff',
+              secondary: '#a855f7',
+              accent: '#38bdf8',
+              glowRgba: 'rgba(0, 240, 255, 0.48)',
+              violetRgba: 'rgba(168, 85, 247, 0.38)',
+            },
+            isFavorite: item.isFavorite || false,
+            isLocalFile: true,
+            isGeneratedCover: true,
+            fileName: item.fileName,
+            fileUrl: freshUrl,
+            blob: item.blob,
+            lyrics: [
+              `Streaming local audio file: ${item.fileName}`,
+              'Routed through R2 ULTRA 10-band Biquad EQ & Dynamic Limiter.',
+              'Real-time FFT audio spectrum analysis active.',
+            ],
+            addedAt: item.addedAt,
+            lastPlayedAt: item.lastPlayedAt,
+          };
+        });
+      } catch (err: any) {
+        console.warn('IndexedDB track hydration notice:', err);
+        if (!isCancelled) {
+          setStorageError('Local database notice: Could not load stored audio tracks.');
         }
-        if (parsed.isShuffle !== undefined) setIsShuffle(parsed.isShuffle);
-        if (parsed.repeatMode) setRepeatMode(parsed.repeatMode);
-        if (parsed.eqBands) setEqBands(parsed.eqBands);
-        if (parsed.activePresetId) setActivePresetId(parsed.activePresetId);
-        if (parsed.customPresets) setCustomPresets(parsed.customPresets);
-        if (parsed.settings) setSettings((prev) => ({ ...prev, ...parsed.settings }));
       }
-    } catch {
-      // Ignore storage parse error
+
+      if (isCancelled) return;
+
+      const combinedTracks = [...restoredTracks, ...baseLibrary];
+
+      try {
+        const savedState = await getStoredItem<PersistedAppState>('app_state');
+        if (savedState && !isCancelled) {
+          if (typeof savedState.volume === 'number') {
+            setVolume(savedState.volume);
+            audioEngine.setVolume(savedState.volume);
+          }
+          if (typeof savedState.isShuffle === 'boolean') {
+            setIsShuffle(savedState.isShuffle);
+          }
+          if (savedState.repeatMode) {
+            setRepeatMode(savedState.repeatMode);
+          }
+          if (savedState.eqBands && Array.isArray(savedState.eqBands)) {
+            setEqBands(savedState.eqBands);
+            audioEngine.setAllEQGains(savedState.eqBands.map((b) => b.gain));
+          }
+          if (savedState.activePresetId) {
+            setActivePresetId(savedState.activePresetId);
+          }
+          if (savedState.customPresets) {
+            setCustomPresets(savedState.customPresets);
+          }
+          if (savedState.effects) {
+            setEffects(savedState.effects);
+            audioEngine.applyEffects(savedState.effects);
+          }
+          if (savedState.playlists && Array.isArray(savedState.playlists)) {
+            setPlaylists(savedState.playlists);
+          }
+          if (savedState.settings) {
+            setSettings((prev) => ({ ...prev, ...savedState.settings }));
+          }
+
+          // Restore favorites (set true for included, false for unfavorited demo tracks)
+          if (Array.isArray(savedState.favoriteIds)) {
+            const favSet = new Set(savedState.favoriteIds);
+            combinedTracks.forEach((t) => {
+              t.isFavorite = favSet.has(t.id);
+            });
+          }
+
+          // Restore recent lastPlayedAt timestamps for all tracks
+          if (savedState.lastPlayedMap && typeof savedState.lastPlayedMap === 'object') {
+            combinedTracks.forEach((t) => {
+              if (savedState.lastPlayedMap && savedState.lastPlayedMap[t.id]) {
+                t.lastPlayedAt = savedState.lastPlayedMap[t.id];
+              }
+            });
+          }
+
+          // Restore queue (preserves an intentionally empty queue)
+          if (Array.isArray(savedState.queueIds)) {
+            const valid = savedState.queueIds.filter((id) =>
+              combinedTracks.some((t) => t.id === id)
+            );
+            setQueueIds(valid);
+          }
+
+          // Restore current track and position (RESUME PAUSED, NEVER AUTOPLAY)
+          if (savedState.currentTrackId) {
+            const track = combinedTracks.find((t) => t.id === savedState.currentTrackId);
+            if (track) {
+              setCurrentTrackId(track.id);
+              setDuration(track.duration);
+              const pos = savedState.savedPosition || 0;
+              setCurrentTime(pos);
+              // Pre-load track metadata without starting playback
+              audioEngine.loadAndPlayTrack(track, false).then(() => {
+                if (pos > 0) {
+                  audioEngine.seek(pos);
+                }
+              });
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn('IndexedDB app_state hydration notice:', err);
+      }
+
+      if (!isCancelled) {
+        setTracks(combinedTracks);
+        setIsHydrated(true);
+      }
     }
+
+    hydrate();
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
-  // Save persistent state
+  // 2. Hydration gate: Save persistent state to IndexedDB only after hydration completes
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          volume,
-          isShuffle,
-          repeatMode,
-          eqBands,
-          activePresetId,
-          customPresets,
-          settings,
-        })
-      );
-    } catch {
-      // Ignore storage quota error
-    }
-  }, [volume, isShuffle, repeatMode, eqBands, activePresetId, customPresets, settings]);
+    if (!isHydrated) return;
+
+    const favoriteIds = tracks.filter((t) => t.isFavorite).map((t) => t.id);
+    const lastPlayedMap: Record<string, number> = {};
+    tracks.forEach((t) => {
+      if (t.lastPlayedAt) {
+        lastPlayedMap[t.id] = t.lastPlayedAt;
+      }
+    });
+
+    const stateToSave: PersistedAppState = {
+      volume,
+      isShuffle,
+      repeatMode,
+      eqBands,
+      activePresetId,
+      customPresets,
+      effects,
+      playlists,
+      settings,
+      currentTrackId,
+      savedPosition: currentTime,
+      queueIds,
+      favoriteIds,
+      lastPlayedMap,
+    };
+
+    setStoredItem('app_state', stateToSave).catch((err: any) => {
+      console.warn('Failed to save state to IndexedDB:', err);
+      setStorageError(`Database save error: ${err?.message || 'Failed to write app state'}`);
+    });
+  }, [
+    isHydrated,
+    volume,
+    isShuffle,
+    repeatMode,
+    eqBands,
+    activePresetId,
+    customPresets,
+    effects,
+    playlists,
+    settings,
+    currentTrackId,
+    currentTime,
+    queueIds,
+    tracks,
+  ]);
 
   const currentTrack = useMemo(
     () => tracks.find((t) => t.id === currentTrackId) || tracks[0],
@@ -204,8 +384,13 @@ export default function App() {
   }, []);
 
   const handleNext = useCallback(() => {
-    const { queueIds: qIds, tracks: allTracks, currentTrack: curr, isShuffle: shuf, repeatMode: rep } =
-      stateRef.current;
+    const {
+      queueIds: qIds,
+      tracks: allTracks,
+      currentTrack: curr,
+      isShuffle: shuf,
+      repeatMode: rep,
+    } = stateRef.current;
 
     if (rep === 'one') {
       handleSelectTrack(curr, true);
@@ -259,6 +444,19 @@ export default function App() {
     setIsPlaying(playing);
   }, []);
 
+  // Separate play and pause handler for MediaSession to prevent auto-toggle desync
+  const handleMediaPlay = useCallback(async () => {
+    await audioEngine.play();
+    audioEngine.setAllEQGains(stateRef.current.eqBands.map((b) => b.gain));
+    audioEngine.applyEffects(stateRef.current.effects);
+    setIsPlaying(true);
+  }, []);
+
+  const handleMediaPause = useCallback(() => {
+    audioEngine.pause();
+    setIsPlaying(false);
+  }, []);
+
   // Wire audio engine callbacks & MediaSession controls
   useEffect(() => {
     audioEngine.setCallbacks(
@@ -272,12 +470,12 @@ export default function App() {
     );
 
     if ('mediaSession' in navigator) {
-      navigator.mediaSession.setActionHandler('play', () => handlePlayPause());
-      navigator.mediaSession.setActionHandler('pause', () => handlePlayPause());
+      navigator.mediaSession.setActionHandler('play', () => handleMediaPlay());
+      navigator.mediaSession.setActionHandler('pause', () => handleMediaPause());
       navigator.mediaSession.setActionHandler('previoustrack', () => handlePrev());
       navigator.mediaSession.setActionHandler('nexttrack', () => handleNext());
     }
-  }, [handleNext, handlePrev, handlePlayPause]);
+  }, [handleNext, handlePrev, handleMediaPlay, handleMediaPause]);
 
   // Real-time telemetry & playback progress ticker
   useEffect(() => {
@@ -287,7 +485,7 @@ export default function App() {
         setCurrentTime(t);
       }
       setTelemetry(
-        audioEngine.getTelemetry(stateRef.current.eqBands, stateRef.current.effects)
+        audioEngine.getTelemetry(stateRef.current.eqBands)
       );
     }, 90);
     return () => clearInterval(interval);
@@ -298,7 +496,7 @@ export default function App() {
     if (effects.sleepTimerRemainingSec === null) return;
     if (effects.sleepTimerRemainingSec <= 0) {
       if (isPlaying) {
-        handlePlayPause();
+        handleMediaPause();
       }
       setEffects((prev) => ({
         ...prev,
@@ -317,9 +515,9 @@ export default function App() {
       }));
     }, 1000);
     return () => clearTimeout(timer);
-  }, [effects.sleepTimerRemainingSec, isPlaying, handlePlayPause]);
+  }, [effects.sleepTimerRemainingSec, isPlaying, handleMediaPause]);
 
-  // Local Audio File Import Handler
+  // Local Audio File Import Handler with IndexedDB Blob persistence
   const handleImportFiles = useCallback(
     async (files: FileList) => {
       const imported: Track[] = [];
@@ -350,34 +548,68 @@ export default function App() {
           violetRgba: 'rgba(168, 85, 247, 0.38)',
         };
 
+        const trackId = `local-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
+        const coverArt = generateHolographicCover(
+          cleanTitle,
+          'Local Audio Import',
+          palette.primary,
+          palette.secondary,
+          i + 3
+        );
+
         const newTrack: Track = {
-          id: `local-${Date.now()}-${i}`,
+          id: trackId,
           title: cleanTitle,
-          artist: 'Local Master Import',
-          album: 'User Audio Vault',
+          artist: 'Unknown Artist (Local)',
+          album: 'Imported Audio',
           folder: '/Local_Storage/Imports',
           duration: fileDuration,
           bpm: 120,
-          bitrate: `${Math.round((file.size * 8) / (fileDuration * 1000)) || 320} kbps`,
-          sampleRate: '48.0 kHz / Local',
-          coverArt: generateHolographicCover(
-            cleanTitle,
-            'Local Audio Import',
-            palette.primary,
-            palette.secondary,
-            i + 3
-          ),
+          bitrate: 'Original Audio File',
+          sampleRate: 'WebAudio / Local File',
+          coverArt,
           palette,
           isFavorite: false,
           isLocalFile: true,
+          isGeneratedCover: true,
+          fileName: file.name,
           fileUrl: objectUrl,
+          blob: file,
           lyrics: [
             `Streaming local audio file: ${file.name}`,
-            'Routed through R2 ULTRA 10-band Biquad DSP & 3D Spatial matrix.',
-            'Real-time FFT spectrum analysis active.',
+            'Routed through R2 ULTRA 10-band Biquad EQ & Dynamic Limiter.',
+            'Real-time FFT audio spectrum analysis active.',
           ],
           addedAt: Date.now(),
         };
+
+        // Persist blob to IndexedDB
+        try {
+          await saveImportedAudioTrack({
+            id: trackId,
+            title: cleanTitle,
+            artist: 'Unknown Artist (Local)',
+            album: 'Imported Audio',
+            folder: '/Local_Storage/Imports',
+            duration: fileDuration,
+            bpm: 120,
+            bitrate: 'Original Audio File',
+            sampleRate: 'WebAudio / Local File',
+            coverArt,
+            palette,
+            isFavorite: false,
+            addedAt: Date.now(),
+            blob: file,
+            mimeType: file.type || 'audio/mpeg',
+            fileName: file.name,
+          });
+        } catch (err: any) {
+          console.error('Failed to store audio file in IndexedDB:', err);
+          setStorageError(
+            `Storage limit reached or IndexedDB unavailable. "${file.name}" is playable now, but will not persist across app reloads.`
+          );
+        }
+
         imported.push(newTrack);
       }
 
@@ -388,6 +620,34 @@ export default function App() {
       }
     },
     [handleSelectTrack]
+  );
+
+  // Delete Track Handler (clean up IndexedDB and revoke Object URL)
+  const handleDeleteTrack = useCallback(
+    async (trackId: string) => {
+      const trackToDelete = tracks.find((t) => t.id === trackId);
+      if (trackToDelete?.fileUrl && trackToDelete.isLocalFile) {
+        URL.revokeObjectURL(trackToDelete.fileUrl);
+      }
+
+      try {
+        await deleteImportedAudioTrack(trackId);
+      } catch (err: any) {
+        console.warn('Failed to delete track from IndexedDB:', err);
+        setStorageError(`Database notice: Could not remove track from storage (${err?.message || 'Transaction error'})`);
+      }
+
+      setTracks((prev) => prev.filter((t) => t.id !== trackId));
+      setQueueIds((prev) => prev.filter((id) => id !== trackId));
+
+      if (currentTrackId === trackId) {
+        const remaining = tracks.filter((t) => t.id !== trackId);
+        if (remaining.length > 0) {
+          handleSelectTrack(remaining[0], false);
+        }
+      }
+    },
+    [tracks, currentTrackId, handleSelectTrack]
   );
 
   // EQ & Effects handlers
@@ -459,7 +719,7 @@ export default function App() {
         const ny = (e.clientY / window.innerHeight - 0.5) * -3.5;
         setStageParallax({ x: nx, y: ny });
       }}
-      className="relative min-h-screen w-full flex flex-col items-center justify-center overflow-hidden px-1.5 sm:px-4 py-4 select-none"
+      className="relative min-h-screen w-full flex flex-col items-center justify-center overflow-x-hidden px-1 sm:px-3 py-2 sm:py-4 select-none"
     >
       {/* 1. Futuristic Ambient Digital City & Liquid Color-Flow Background */}
       <HolographicBackground
@@ -470,118 +730,154 @@ export default function App() {
         enableColorFlow={settings.enableColorFlow}
       />
 
-      {/* 2. Holographic 3D Floating Stage (Main Panel + Left/Right Floating Widgets + Bottom Status Panels) */}
+      {/* 2. Holographic Floating Stage (Main Panel + Floating Widgets + Bottom Status Panels) */}
       <main
-        className="relative z-10 w-full max-w-[540px] flex flex-col items-center justify-center r2-stage-perspective my-auto pt-5"
+        className="relative z-10 w-full max-w-[560px] flex flex-col items-center justify-center r2-stage-perspective my-auto pt-1 sm:pt-4"
         style={{
-          transform: settings.enable3DTilt
-            ? `perspective(1350px) rotateX(${rotX.toFixed(2)}deg) rotateY(${rotY.toFixed(
-                2
-              )}deg) rotateZ(${rotZ.toFixed(2)}deg)`
-            : 'none',
+          transform:
+            settings.enable3DTilt && typeof window !== 'undefined' && window.innerWidth >= 768
+              ? `perspective(1350px) rotateX(${rotX.toFixed(2)}deg) rotateY(${rotY.toFixed(
+                  2
+                )}deg) rotateZ(${rotZ.toFixed(2)}deg)`
+              : 'none',
           transition: 'transform 0.25s ease-out',
         }}
       >
-        {/* Middle Row: Left Floating Widgets + Central Main Glass Panel + Right Floating Widgets */}
-        <div className="w-full flex items-center justify-center gap-1.5 sm:gap-2.5">
+        {/* Mobile Top Row Widgets (screens < md) */}
+        <div className="w-full block md:hidden mb-1.5 px-0.5">
           <LeftFloatingWidgets
             telemetry={telemetry}
             palette={currentTrack.palette}
             onToggleEngine={handlePlayPause}
             onSelectScreen={setActiveScreen}
+            layout="mobile-row"
           />
+        </div>
 
-          <MainGlassPanel
-            activeScreen={activeScreen}
-            onSelectScreen={setActiveScreen}
-            currentTrack={currentTrack}
-            tracks={tracks}
-            queueIds={queueIds}
-            playlists={playlists}
-            isPlaying={isPlaying}
-            currentTime={currentTime}
-            duration={duration}
-            volume={volume}
-            isShuffle={isShuffle}
-            repeatMode={repeatMode}
-            telemetry={telemetry}
-            eqBands={eqBands}
-            activePresetId={activePresetId}
-            customPresets={customPresets}
-            effects={effects}
-            visualizerMode={visualizerMode}
-            settings={settings}
-            onPlayPause={handlePlayPause}
-            onPrev={handlePrev}
-            onNext={handleNext}
-            onSeek={(sec) => {
-              audioEngine.seek(sec);
-              setCurrentTime(sec);
-            }}
-            onChangeVolume={(val) => {
-              setVolume(val);
-              audioEngine.setVolume(val);
-            }}
-            onToggleShuffle={() => setIsShuffle((s) => !s)}
-            onCycleRepeat={() =>
-              setRepeatMode((r) =>
-                r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'
-              )
-            }
-            onToggleFavorite={(id) =>
-              setTracks((prev) =>
-                prev.map((t) =>
-                  t.id === id ? { ...t, isFavorite: !t.isFavorite } : t
+        {/* Center Container: Desktop Floating Sides + Responsive Main Glass Panel */}
+        <div className="w-full flex items-center justify-center gap-1.5 sm:gap-2.5">
+          {/* Left Floating Widgets (Desktop and Tablet md+) */}
+          <div className="hidden md:block shrink-0">
+            <LeftFloatingWidgets
+              telemetry={telemetry}
+              palette={currentTrack.palette}
+              onToggleEngine={handlePlayPause}
+              onSelectScreen={setActiveScreen}
+              layout="desktop"
+            />
+          </div>
+
+          {/* Full-width central holographic panel (360px-440px on mobile without horizontal clipping) */}
+          <div className="w-full max-w-[430px] flex-1">
+            <MainGlassPanel
+              activeScreen={activeScreen}
+              onSelectScreen={setActiveScreen}
+              currentTrack={currentTrack}
+              tracks={tracks}
+              queueIds={queueIds}
+              playlists={playlists}
+              isPlaying={isPlaying}
+              currentTime={currentTime}
+              duration={duration}
+              volume={volume}
+              isShuffle={isShuffle}
+              repeatMode={repeatMode}
+              telemetry={telemetry}
+              eqBands={eqBands}
+              activePresetId={activePresetId}
+              customPresets={customPresets}
+              effects={effects}
+              visualizerMode={visualizerMode}
+              settings={settings}
+              storageError={storageError}
+              onDismissError={() => setStorageError(null)}
+              onPlayPause={handlePlayPause}
+              onPrev={handlePrev}
+              onNext={handleNext}
+              onSeek={(sec) => {
+                audioEngine.seek(sec);
+                setCurrentTime(sec);
+              }}
+              onChangeVolume={(val) => {
+                setVolume(val);
+                audioEngine.setVolume(val);
+              }}
+              onToggleShuffle={() => setIsShuffle((s) => !s)}
+              onCycleRepeat={() =>
+                setRepeatMode((r) =>
+                  r === 'off' ? 'all' : r === 'all' ? 'one' : 'off'
                 )
-              )
-            }
-            onSelectTrack={(t) => handleSelectTrack(t, true)}
-            onImportFiles={handleImportFiles}
-            onChangeEQBand={handleChangeEQBand}
-            onSelectEQPreset={handleSelectEQPreset}
-            onSaveCustomPreset={handleSaveCustomPreset}
-            onResetEQ={handleResetEQ}
-            onUpdateEffects={handleUpdateEffects}
-            onResetEffects={handleResetEffects}
-            onChangeVisualizerMode={setVisualizerMode}
-            onMoveInQueue={(idx, dir) => {
-              setQueueIds((prev) => {
-                const copy = [...prev];
-                const target = idx + dir;
-                if (target < 0 || target >= copy.length) return prev;
-                const temp = copy[idx];
-                copy[idx] = copy[target];
-                copy[target] = temp;
-                return copy;
-              });
-            }}
-            onRemoveFromQueue={(idx) =>
-              setQueueIds((prev) => prev.filter((_, i) => i !== idx))
-            }
-            onCreatePlaylist={(name) => {
-              const newPl: Playlist = {
-                id: `pl-${Date.now()}`,
-                name,
-                description: 'Custom R2 ULTRA Queue Snapshot',
-                trackIds: [...queueIds],
-                createdAt: Date.now(),
-              };
-              setPlaylists((prev) => [newPl, ...prev]);
-            }}
-            onLoadPlaylist={(pl) => {
-              setQueueIds(pl.trackIds);
-              const first = tracks.find((t) => t.id === pl.trackIds[0]);
-              if (first) handleSelectTrack(first, true);
-            }}
-            onUpdateSettings={(partial) =>
-              setSettings((prev) => ({ ...prev, ...partial }))
-            }
-          />
+              }
+              onToggleFavorite={(id) =>
+                setTracks((prev) =>
+                  prev.map((t) =>
+                    t.id === id ? { ...t, isFavorite: !t.isFavorite } : t
+                  )
+                )
+              }
+              onSelectTrack={(t) => handleSelectTrack(t, true)}
+              onImportFiles={handleImportFiles}
+              onDeleteTrack={handleDeleteTrack}
+              onChangeEQBand={handleChangeEQBand}
+              onSelectEQPreset={handleSelectEQPreset}
+              onSaveCustomPreset={handleSaveCustomPreset}
+              onResetEQ={handleResetEQ}
+              onUpdateEffects={handleUpdateEffects}
+              onResetEffects={handleResetEffects}
+              onChangeVisualizerMode={setVisualizerMode}
+              onMoveInQueue={(idx, dir) => {
+                setQueueIds((prev) => {
+                  const copy = [...prev];
+                  const target = idx + dir;
+                  if (target < 0 || target >= copy.length) return prev;
+                  const temp = copy[idx];
+                  copy[idx] = copy[target];
+                  copy[target] = temp;
+                  return copy;
+                });
+              }}
+              onRemoveFromQueue={(idx) =>
+                setQueueIds((prev) => prev.filter((_, i) => i !== idx))
+              }
+              onCreatePlaylist={(name) => {
+                const newPl: Playlist = {
+                  id: `pl-${Date.now()}`,
+                  name,
+                  description: 'Custom R2 ULTRA Queue Snapshot',
+                  trackIds: [...queueIds],
+                  createdAt: Date.now(),
+                };
+                setPlaylists((prev) => [newPl, ...prev]);
+              }}
+              onLoadPlaylist={(pl) => {
+                setQueueIds(pl.trackIds);
+                const first = tracks.find((t) => t.id === pl.trackIds[0]);
+                if (first) handleSelectTrack(first, true);
+              }}
+              onUpdateSettings={(partial) =>
+                setSettings((prev) => ({ ...prev, ...partial }))
+              }
+            />
+          </div>
 
+          {/* Right Floating Widgets (Desktop and Tablet md+) */}
+          <div className="hidden md:block shrink-0">
+            <RightFloatingWidgets
+              activeScreen={activeScreen}
+              palette={currentTrack.palette}
+              onSelectScreen={setActiveScreen}
+              layout="desktop"
+            />
+          </div>
+        </div>
+
+        {/* Mobile Bottom Row Widgets (screens < md) */}
+        <div className="w-full block md:hidden mt-1.5 px-0.5">
           <RightFloatingWidgets
             activeScreen={activeScreen}
             palette={currentTrack.palette}
             onSelectScreen={setActiveScreen}
+            layout="mobile-row"
           />
         </div>
 

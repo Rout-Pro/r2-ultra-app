@@ -25,6 +25,7 @@ interface LibraryScreenProps {
   onSelectTrack: (track: Track) => void;
   onToggleFavorite: (trackId: string) => void;
   onImportFiles: (files: FileList) => void;
+  onDeleteTrack?: (trackId: string) => void;
 }
 
 export const MusicLibraryScreen: React.FC<LibraryScreenProps> = ({
@@ -35,6 +36,7 @@ export const MusicLibraryScreen: React.FC<LibraryScreenProps> = ({
   onSelectTrack,
   onToggleFavorite,
   onImportFiles,
+  onDeleteTrack,
 }) => {
   const [subTab, setSubTab] = useState<
     'songs' | 'albums' | 'artists' | 'folders' | 'favorites' | 'recent'
@@ -238,8 +240,8 @@ export const MusicLibraryScreen: React.FC<LibraryScreenProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-mono-tech text-[10px] text-cyan-200/80">
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="font-mono-tech text-[10px] text-cyan-200/80 mr-1">
                       {formatTime(track.duration)}
                     </span>
                     <button
@@ -249,16 +251,29 @@ export const MusicLibraryScreen: React.FC<LibraryScreenProps> = ({
                         onToggleFavorite(track.id);
                       }}
                       title="Toggle Favorite"
-                      className="p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                      className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
                     >
                       <Heart
-                        className={`w-3.5 h-3.5 ${
+                        className={`w-4 h-4 ${
                           track.isFavorite
                             ? 'text-pink-400 fill-pink-400'
                             : 'text-cyan-200/60'
                         }`}
                       />
                     </button>
+                    {track.isLocalFile && onDeleteTrack && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteTrack(track.id);
+                        }}
+                        title="Delete Stored Audio File"
+                        className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-pink-400/80 hover:text-pink-300 hover:bg-pink-500/10 active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -475,30 +490,33 @@ export const QueueAndPlaylistScreen: React.FC<QueueScreenProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-0.5 shrink-0">
                   <button
                     type="button"
                     disabled={idx === 0}
                     onClick={() => onMoveInQueue(idx, -1)}
-                    className="p-1 rounded hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                    title="Move Up"
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl hover:bg-white/10 disabled:opacity-30 active:scale-95 transition-all cursor-pointer"
                   >
-                    <ArrowUp className="w-3.5 h-3.5 text-cyan-200" />
+                    <ArrowUp className="w-4 h-4 text-cyan-200" />
                   </button>
                   <button
                     type="button"
                     disabled={idx === queueTracks.length - 1}
                     onClick={() => onMoveInQueue(idx, 1)}
-                    className="p-1 rounded hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                    title="Move Down"
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl hover:bg-white/10 disabled:opacity-30 active:scale-95 transition-all cursor-pointer"
                   >
-                    <ArrowDown className="w-3.5 h-3.5 text-cyan-200" />
+                    <ArrowDown className="w-4 h-4 text-cyan-200" />
                   </button>
                   <button
                     type="button"
                     disabled={queueTracks.length <= 1}
                     onClick={() => onRemoveFromQueue(idx)}
-                    className="p-1 rounded hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                    title="Remove From Queue"
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl hover:bg-pink-500/15 disabled:opacity-30 active:scale-95 transition-all cursor-pointer"
                   >
-                    <Trash2 className="w-3.5 h-3.5 text-pink-300" />
+                    <Trash2 className="w-4 h-4 text-pink-300" />
                   </button>
                 </div>
               </div>

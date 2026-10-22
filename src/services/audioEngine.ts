@@ -211,11 +211,11 @@ class R2AudioEngine {
         if (outputs.length > 0 && outputs[0].label) {
           this.outputDeviceLabel = outputs[0].label;
         } else {
-          this.outputDeviceLabel = 'Stereo WebAudio 24-Bit';
+          this.outputDeviceLabel = 'System Stereo Output';
         }
       }
     } catch {
-      this.outputDeviceLabel = 'Stereo WebAudio 24-Bit';
+      this.outputDeviceLabel = 'System Stereo Output';
     }
   }
 
@@ -228,17 +228,16 @@ class R2AudioEngine {
   }
 
   public async loadAndPlayTrack(track: Track, autoPlay = true): Promise<void> {
+    this.currentTrack = track;
+
     if (!autoPlay && !this.ctx) {
-      this.currentTrack = track;
-      this.pauseOffset = 0;
       this.isPlaying = false;
-      this.updateMediaSession(track);
+      this.updateMediaSession(track, this.pauseOffset);
       return;
     }
 
     const ctx = this.initContext();
     if (!ctx) {
-      this.currentTrack = track;
       this.isPlaying = false;
       return;
     }
@@ -253,12 +252,25 @@ class R2AudioEngine {
 
     this.stopCurrentSource();
     this.currentTrack = track;
-    this.pauseOffset = 0;
+    if (autoPlay) {
+      this.pauseOffset = 0;
+    }
 
     if (track.isLocalFile && track.fileUrl && this.htmlAudio) {
       this.htmlAudio.src = track.fileUrl;
       this.htmlAudio.playbackRate = this.playbackSpeed;
-      this.htmlAudio.currentTime = 0;
+      if (this.pauseOffset > 0) {
+        if (this.htmlAudio.readyState >= 1) {
+          try {
+            this.htmlAudio.currentTime = this.pauseOffset;
+          } catch {
+            // Deferred to metadata
+          }
+        }
+      } else {
+        this.htmlAudio.currentTime = 0;
+      }
+
       if (autoPlay) {
         await this.htmlAudio.play();
         this.isPlaying = true;
@@ -272,14 +284,14 @@ class R2AudioEngine {
         this.synthBufferCache.set(track.id, buffer);
       }
       if (autoPlay) {
-        this.startBufferSource(buffer, 0);
+        this.startBufferSource(buffer, this.pauseOffset || 0);
         this.isPlaying = true;
       } else {
         this.isPlaying = false;
       }
     }
 
-    this.updateMediaSession(track);
+    this.updateMediaSession(track, this.pauseOffset);
   }
 
   private startBufferSource(buffer: AudioBuffer, offsetSeconds: number) {
@@ -333,7 +345,8 @@ class R2AudioEngine {
     this.isPlaying = false;
   }
 
-  public async togglePlayPause(track: Track): Promise<boolean> {
+  public async play(): Promise<boolean> {
+    if (!this.currentTrack) return false;
     const ctx = this.initContext();
     if (!ctx) return false;
 
@@ -345,35 +358,85 @@ class R2AudioEngine {
       }
     }
 
-    if (!this.currentTrack || this.currentTrack.id !== track.id) {
-      await this.loadAndPlayTrack(track, true);
-      return true;
+    if (!this.isPlaying) {
+      if (this.currentTrack.isLocalFile) {
+        if (!this.htmlAudio) return false;
+
+        // Ensure source is loaded to current fileUrl
+        if (this.currentTrack.fileUrl && (!this.htmlAudio.src || !this.htmlAudio.src.includes(this.currentTrack.fileUrl))) {
+          this.htmlAudio.src = this.currentTrack.fileUrl;
+          this.htmlAudio.playbackRate = this.playbackSpeed;
+        }
+
+        const targetOffset = this.pauseOffset || 0;
+        if (targetOffset > 0) {
+          if (this.htmlAudio.readyState >= 1) {
+            try {
+              this.htmlAudio.currentTime = targetOffset;
+            } catch {
+              // Ignore
+            }
+          } else {
+            const onMeta = () => {
+              try {
+                if (this.htmlAudio) this.htmlAudio.currentTime = targetOffset;
+              } catch {
+                // Ignore
+              }
+              this.htmlAudio?.removeEventListener('loadedmetadata', onMeta);
+            };
+            this.htmlAudio.addEventListener('loadedmetadata', onMeta);
+          }
+        }
+
+        try {
+          await this.htmlAudio.play();
+          this.isPlaying = true;
+        } catch {
+          this.isPlaying = false;
+        }
+      } else if (this.currentTrack.synthRecipe) {
+        let buffer = this.synthBufferCache.get(this.currentTrack.id);
+        if (!buffer) {
+          buffer = renderSynthTrackBuffer(ctx, this.currentTrack.synthRecipe, this.currentTrack.duration);
+          this.synthBufferCache.set(this.currentTrack.id, buffer);
+        }
+        this.startBufferSource(buffer, this.pauseOffset);
+        this.isPlaying = true;
+      }
     }
 
+    this.updateMediaSession(this.currentTrack, this.pauseOffset);
+    return this.isPlaying;
+  }
+
+  public pause(): void {
     if (this.isPlaying) {
-      // Pause
-      if (track.isLocalFile && this.htmlAudio) {
+      if (this.currentTrack?.isLocalFile && this.htmlAudio) {
+        this.pauseOffset = this.htmlAudio.currentTime;
         this.htmlAudio.pause();
       } else {
         this.pauseOffset = this.getCurrentTime();
         this.stopBufferSourceOnly();
       }
       this.isPlaying = false;
+      if (this.currentTrack) {
+        this.updateMediaSession(this.currentTrack, this.pauseOffset);
+      }
+    }
+  }
+
+  public async togglePlayPause(track: Track): Promise<boolean> {
+    if (!this.currentTrack || this.currentTrack.id !== track.id) {
+      await this.loadAndPlayTrack(track, true);
+      return true;
+    }
+
+    if (this.isPlaying) {
+      this.pause();
       return false;
     } else {
-      // Resume
-      if (track.isLocalFile && this.htmlAudio) {
-        await this.htmlAudio.play();
-      } else if (track.synthRecipe) {
-        let buffer = this.synthBufferCache.get(track.id);
-        if (!buffer) {
-          buffer = renderSynthTrackBuffer(ctx, track.synthRecipe, track.duration);
-          this.synthBufferCache.set(track.id, buffer);
-        }
-        this.startBufferSource(buffer, this.pauseOffset);
-      }
-      this.isPlaying = true;
-      return true;
+      return await this.play();
     }
   }
 
@@ -382,8 +445,26 @@ class R2AudioEngine {
     const clamped = Math.max(0, Math.min(seconds, this.currentTrack.duration));
     this.pauseOffset = clamped;
 
-    if (this.currentTrack.isLocalFile && this.htmlAudio) {
-      this.htmlAudio.currentTime = clamped;
+    if (this.currentTrack.isLocalFile) {
+      if (this.htmlAudio) {
+        if (this.htmlAudio.src && this.htmlAudio.readyState >= 1) {
+          try {
+            this.htmlAudio.currentTime = clamped;
+          } catch {
+            // Ignore seek
+          }
+        } else if (this.htmlAudio.src) {
+          const onMeta = () => {
+            try {
+              if (this.htmlAudio) this.htmlAudio.currentTime = clamped;
+            } catch {
+              // Ignore
+            }
+            this.htmlAudio?.removeEventListener('loadedmetadata', onMeta);
+          };
+          this.htmlAudio.addEventListener('loadedmetadata', onMeta);
+        }
+      }
     } else if (this.currentTrack.synthRecipe && this.ctx) {
       if (this.isPlaying) {
         const buffer = this.synthBufferCache.get(this.currentTrack.id);
@@ -392,12 +473,16 @@ class R2AudioEngine {
         }
       }
     }
+    this.updateMediaSession(this.currentTrack, clamped);
   }
 
   public getCurrentTime(): number {
     if (!this.currentTrack) return 0;
-    if (this.currentTrack.isLocalFile && this.htmlAudio) {
-      return this.htmlAudio.currentTime;
+    if (this.currentTrack.isLocalFile) {
+      if (this.htmlAudio && this.isPlaying) {
+        return this.htmlAudio.currentTime;
+      }
+      return this.pauseOffset;
     }
     if (!this.isPlaying || !this.ctx) {
       return this.pauseOffset;
@@ -470,88 +555,89 @@ class R2AudioEngine {
     return { fft: this.fftData, waveform: this.timeData };
   }
 
-  public getTelemetry(eqBands: EQBand[], fx: AudioEffectsState): TelemetryData {
+  public getTelemetry(eqBands: EQBand[]): TelemetryData {
     const { fft, waveform } = this.getAnalyserData();
 
-    // Compute RMS dB from time-domain waveform
+    // Compute real measured RMS and Peak dB from time-domain waveform
     let sumSquares = 0;
+    let maxVal = 0;
     for (let i = 0; i < waveform.length; i++) {
-      const norm = (waveform[i] - 128) / 128;
+      const norm = Math.abs((waveform[i] - 128) / 128);
+      if (norm > maxVal) maxVal = norm;
       sumSquares += norm * norm;
     }
-    const rms = Math.sqrt(sumSquares / waveform.length);
-    const rmsDb = rms > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(rms))) : -60;
+    const rms = Math.sqrt(sumSquares / Math.max(1, waveform.length));
+    const rmsDb = this.isPlaying && rms > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(rms))) : -60;
+    const peakDb = this.isPlaying && maxVal > 0.0001 ? Math.max(-60, Math.min(0, 20 * Math.log10(maxVal))) : -60;
+
     const signalPercent = this.isPlaying
-      ? Math.min(100, Math.max(8, Math.round(((rmsDb + 52) / 52) * 100)))
+      ? Math.min(100, Math.max(0, Math.round(((rmsDb + 54) / 54) * 100)))
       : 0;
 
-    // Compute Bass / Mid / Treble energy rings from real FFT bins
+    // Real measured Bass / Mid / Treble energy from actual FFT bins
     let bassSum = 0;
     for (let i = 1; i <= 10; i++) bassSum += fft[i] || 0;
-    const bassEnergy = Math.min(100, Math.round((bassSum / (10 * 255)) * 115));
+    const bassEnergy = this.isPlaying ? Math.min(100, Math.round((bassSum / (10 * 255)) * 100)) : 0;
 
     let midSum = 0;
     for (let i = 11; i <= 60; i++) midSum += fft[i] || 0;
-    const midEnergy = Math.min(100, Math.round((midSum / (50 * 255)) * 125));
+    const midEnergy = this.isPlaying ? Math.min(100, Math.round((midSum / (50 * 255)) * 100)) : 0;
 
     let trebleSum = 0;
     for (let i = 61; i <= 140; i++) trebleSum += fft[i] || 0;
-    const trebleEnergy = Math.min(100, Math.round((trebleSum / (80 * 255)) * 145));
+    const trebleEnergy = this.isPlaying ? Math.min(100, Math.round((trebleSum / (80 * 255)) * 100)) : 0;
 
-    // 16 compact spectrum bars for widgets & mini-visualizers
+    // 16 real FFT spectrum bars
     const frequencyBars: number[] = [];
     for (let b = 0; b < 16; b++) {
       const startBin = Math.floor(Math.pow(b / 16, 1.6) * 120) + 1;
-      const val = fft[startBin] || 0;
+      const val = this.isPlaying ? (fft[startBin] || 0) : 0;
       frequencyBars.push(Math.round((val / 255) * 100));
     }
 
-    // Calculate realistic DSP activity load based on active filters & signal
-    const activeEqCount = eqBands.filter((b) => Math.abs(b.gain) > 0.2).length;
-    const dspBase = this.isPlaying ? 34 : 12;
-    const dspLoadPercent = Math.min(
-      98,
-      Math.round(
-        dspBase +
-          activeEqCount * 2.2 +
-          (fx.spatialAmbience > 0 ? 11 : 0) +
-          (fx.compressorEnabled ? 6 : 0) +
-          signalPercent * 0.18
-      )
-    );
-
-    const headroomPercent = Math.max(12, Math.min(99, 100 - Math.round(signalPercent * 0.72)));
+    const activeBandsCount = eqBands.filter((b) => Math.abs(b.gain) > 0.2).length;
 
     return {
       engineRunning: this.isPlaying,
       contextState: this.ctx ? (this.ctx.state as 'suspended' | 'running' | 'closed') : 'suspended',
-      sampleRate: this.ctx ? this.ctx.sampleRate : 48000,
-      outputDeviceLabel: this.outputDeviceLabel,
-      outputChannels: this.ctx ? this.ctx.destination.maxChannelCount || 2 : 2,
+      sampleRate: this.ctx ? this.ctx.sampleRate : 0,
+      outputDeviceLabel: this.outputDeviceLabel || 'System Stereo Output',
+      outputChannels: this.ctx ? (this.ctx.destination.maxChannelCount || 2) : 2,
       rmsDb: Math.round(rmsDb * 10) / 10,
+      peakDb: Math.round(peakDb * 10) / 10,
       signalPercent,
       bassEnergy,
       midEnergy,
       trebleEnergy,
-      dspLoadPercent,
-      bufferHealthPercent: this.isPlaying ? 98 : 89,
-      headroomPercent,
+      activeBandsCount,
       frequencyBars,
     };
   }
 
-  private updateMediaSession(track: Track) {
+  public updateMediaSession(track: Track, position?: number) {
     if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-        artwork: track.coverArt
-          ? [{ src: track.coverArt, sizes: '512x512', type: 'image/png' }]
-          : [],
-      });
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.title,
+          artist: track.artist,
+          album: track.album,
+          artwork: track.coverArt
+            ? [{ src: track.coverArt, sizes: '512x512', type: 'image/png' }]
+            : [],
+        });
+        if ('setPositionState' in navigator.mediaSession && track.duration > 0) {
+          navigator.mediaSession.setPositionState({
+            duration: Math.max(1, track.duration),
+            playbackRate: this.playbackSpeed || 1,
+            position: Math.max(0, Math.min(position ?? this.getCurrentTime(), track.duration)),
+          });
+        }
+      } catch {
+        // Safe catch for browsers with restricted MediaSession
+      }
     }
   }
 }
 
 export const audioEngine = new R2AudioEngine();
+

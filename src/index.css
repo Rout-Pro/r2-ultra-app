@@ -15,7 +15,7 @@
   }
 
   body {
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background-color: #020612;
     color: #e2f1ff;
     overflow-x: hidden;
@@ -23,15 +23,15 @@
   }
 
   .font-display {
-    font-family: 'Rajdhani', 'Orbitron', sans-serif;
+    font-family: 'Rajdhani', 'Orbitron', system-ui, sans-serif;
   }
 
   .font-orbitron {
-    font-family: 'Orbitron', sans-serif;
+    font-family: 'Orbitron', system-ui, sans-serif;
   }
 
   .font-mono-tech {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-variant-numeric: tabular-nums;
   }
 }

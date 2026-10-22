@@ -471,7 +471,7 @@ export function createInitialLibrary(): Track[] {
         'High-velocity transients locked to the master clock.',
         'Ten-band parametric filters sculpted for maximum punch.',
         'Feel the kinetic pressure wave across the glass plane.',
-        'Full output stage active — zero clipping detected.',
+        'Full output stage active — dynamics compressor engaged.',
       ],
     },
   ];
@@ -484,8 +484,8 @@ export function createInitialLibrary(): Track[] {
     folder: def.folder,
     duration: def.duration,
     bpm: def.bpm,
-    bitrate: '1411 kbps',
-    sampleRate: '48.0 kHz / 24-bit',
+    bitrate: 'Procedural Synth',
+    sampleRate: '48.0 kHz Synth',
     coverArt: generateHolographicCover(
       def.title,
       def.artist,

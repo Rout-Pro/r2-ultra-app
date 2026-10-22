@@ -43,12 +43,15 @@ export interface Track {
   folder: string;
   duration: number; // in seconds
   bpm: number;
-  bitrate: string;
-  sampleRate: string;
+  bitrate?: string;
+  sampleRate?: string;
   coverArt: string; // DataURL or SVG/Canvas generated cover
   palette: ColorPalette;
   isFavorite: boolean;
   isLocalFile?: boolean;
+  isGeneratedCover?: boolean;
+  fileName?: string;
+  blob?: Blob;
   fileUrl?: string;
   synthRecipe?: SynthRecipe;
   lyrics?: string[];
@@ -93,15 +96,14 @@ export interface TelemetryData {
   sampleRate: number;
   outputDeviceLabel: string;
   outputChannels: number;
-  rmsDb: number;          // -60 to 0 dB
-  signalPercent: number;  // 0 to 100
-  bassEnergy: number;     // 0 to 100
-  midEnergy: number;      // 0 to 100
-  trebleEnergy: number;   // 0 to 100
-  dspLoadPercent: number; // calculated from active nodes & FFT activity
-  bufferHealthPercent: number;
-  headroomPercent: number;
-  frequencyBars: number[]; // 16 compact spectrum bars
+  rmsDb: number;          // Real measured -60 to 0 dB
+  peakDb: number;         // Real measured peak -60 to 0 dB
+  signalPercent: number;  // Measured 0 to 100% from RMS
+  bassEnergy: number;     // Real low FFT bin energy 0 to 100
+  midEnergy: number;      // Real mid FFT bin energy 0 to 100
+  trebleEnergy: number;   // Real high FFT bin energy 0 to 100
+  activeBandsCount: number;// Count of non-zero EQ bands
+  frequencyBars: number[]; // 16 measured FFT spectrum bars
 }
 
 export interface AppSettings {

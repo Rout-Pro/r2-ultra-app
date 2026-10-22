@@ -251,7 +251,7 @@ export const VisualizerStudio: React.FC<VisualizerStudioProps> = ({
         <div className="absolute top-2.5 left-3 flex items-center gap-1.5 pointer-events-none">
           <Eye className="w-3.5 h-3.5 text-cyan-300" />
           <span className="font-mono-tech text-[10px] text-cyan-200/90 uppercase">
-            FFT 512 // 60FPS REALTIME
+            FFT 512 // REALTIME ANALYSER
           </span>
         </div>
         <div className="absolute top-2.5 right-3 pointer-events-none">

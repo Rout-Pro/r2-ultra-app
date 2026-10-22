@@ -101,9 +101,9 @@ export const EffectsLabScreen: React.FC<EffectsLabScreenProps> = ({
           <span className="text-[8.5px] text-purple-200/75 mt-1">9.5kHz Harmonics</span>
         </div>
 
-        {/* 3D Spatial Ambience */}
+        {/* Stereo Delay & Ambience Simulation */}
         <div className="rounded-2xl r2-card-cyan p-2.5 flex flex-col items-center text-center">
-          <span className="text-[10px] font-semibold text-cyan-100">3D Spatial</span>
+          <span className="text-[10px] font-semibold text-cyan-100">Stereo Delay</span>
           <span className="font-mono-tech text-sm font-bold text-white my-1">
             {effects.spatialAmbience}%
           </span>
@@ -118,7 +118,7 @@ export const EffectsLabScreen: React.FC<EffectsLabScreenProps> = ({
             }
             className="r2-slider w-full mt-1"
           />
-          <span className="text-[8.5px] text-cyan-200/75 mt-1">Stereo Haas Matrix</span>
+          <span className="text-[8.5px] text-cyan-200/75 mt-1">Delay Simulation</span>
         </div>
       </div>
 
@@ -181,10 +181,10 @@ export const EffectsLabScreen: React.FC<EffectsLabScreenProps> = ({
           </div>
           <div>
             <div className="text-[11px] font-semibold text-white leading-tight">
-              Dynamics Guard
+              Dynamics Limiter
             </div>
             <div className="text-[9px] text-cyan-200/75">
-              Zero-clipping compressor
+              Dynamics compressor
             </div>
           </div>
         </button>

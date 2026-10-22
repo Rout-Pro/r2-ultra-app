@@ -1,0 +1,110 @@
+name: Build Android Test APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Assemble Debug APK & Publish Pre-Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint and Build Web Assets
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Initialize & Sync Android Platform
+        run: |
+          if [ ! -d "android" ]; then
+            echo "Adding Capacitor Android platform..."
+            npx cap add android
+          fi
+          echo "Syncing web assets to Capacitor Android project..."
+          npx cap sync android
+
+      - name: Build Debug Test APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Package & Generate Checksum
+        run: |
+          APK_SRC=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_SRC" ]; then
+            echo "Error: Debug APK not found in build outputs!"
+            exit 1
+          fi
+          cp "$APK_SRC" R2-ULTRA-test.apk
+          sha256sum R2-ULTRA-test.apk > R2-ULTRA-test.apk.sha256
+          echo "Debug APK prepared successfully."
+          echo "SHA256:"
+          cat R2-ULTRA-test.apk.sha256
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-ultra-test-apk
+          path: |
+            R2-ULTRA-test.apk
+            R2-ULTRA-test.apk.sha256
+
+      - name: Publish GitHub Pre-Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="android-test"
+          RELEASE_TITLE="R2 ULTRA — Android Test APK (${GITHUB_SHA::8})"
+          RELEASE_NOTES="### ⚡ R2 ULTRA Holographic Audio System — Android Test Build
+
+          **Commit:** \`${GITHUB_SHA}\`
+          **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          #### ⚠️ Internal Test Build Notice
+          - This is a **debug-signed test APK** (signed with the standard Android SDK debug keystore) intended for developer verification and device sideloading.
+          - It is **not** a production Google Play Store release.
+          - All procedural synth tracks, 10-band biquad equalizer, spatial ambience simulation, and IndexedDB local file storage are bundled.
+          - Sideloading requires enabling 'Install unknown apps' on Android devices.
+
+          #### 🔒 Verification Checksum (SHA-256)
+          \`\`\`
+          $(cat R2-ULTRA-test.apk.sha256)
+          \`\`\`"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists. Updating assets and metadata..."
+            gh release upload "$RELEASE_TAG" R2-ULTRA-test.apk R2-ULTRA-test.apk.sha256 --clobber
+            gh release edit "$RELEASE_TAG" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_NOTES" --prerelease
+          else
+            echo "Creating new pre-release $RELEASE_TAG targeting $GITHUB_SHA..."
+            gh release create "$RELEASE_TAG" R2-ULTRA-test.apk R2-ULTRA-test.apk.sha256 \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes "$RELEASE_NOTES" \
+              --prerelease
+          fi
