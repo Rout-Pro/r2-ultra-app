@@ -1,0 +1,6 @@
+{
+  "name": "R2 ULTRA",
+  "description": "Futuristic holographic glass music player, Web Audio DSP equalizer, spatial audio effects lab, and 3D reactive visualizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
